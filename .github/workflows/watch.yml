@@ -1,0 +1,48 @@
+name: Claude Code 版本监控
+
+on:
+  schedule:
+    - cron: "1 9 * * *"   # 每 15 分钟检查一次
+  workflow_dispatch:          # 支持手动触发
+
+permissions:
+  contents: write
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查新版本并通知飞书
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          latest=$(curl -fsSL https://registry.npmjs.org/@anthropic-ai/claude-code/latest | jq -r .version)
+          last=$(cat last-version.txt 2>/dev/null || true)
+          echo "latest=$latest last=$last"
+
+          if [ "$latest" = "$last" ]; then
+            echo "没有新版本"
+            exit 0
+          fi
+
+          text=$(printf 'Claude Code 发布新版本：%s\n更新日志：%s' \
+            "$latest" "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md")
+          payload=$(jq -n --arg t "$text" '{msg_type:"text",content:{text:$t}}')
+
+          resp=$(curl -fsS -X POST -H "Content-Type: application/json" -d "$payload" "$FEISHU_WEBHOOK")
+          echo "飞书返回：$resp"
+          echo "$resp" | jq -e '.code == 0' > /dev/null   # 飞书出错时 HTTP 也是 200，要检查 code
+
+          echo "$latest" > last-version.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898699+github-actions[bot]@users.noreply.github.com"
+          git add last-version.txt
+          git commit -m "claude-code $latest"
+          git push
